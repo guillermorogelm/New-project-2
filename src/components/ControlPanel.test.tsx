@@ -4,12 +4,17 @@ import { ControlPanel } from "./ControlPanel";
 import type { RealtimeStatus } from "../hooks/useRealtimeTranslation";
 
 describe("ControlPanel", () => {
-  it.each<RealtimeStatus>(["connecting", "listening"])(
-    "disables Start Listening while %s",
-    (status) => {
+  it("renders the direction selector options", () => {
+    renderControlPanel("idle");
+
+    expect(screen.getAllByRole("radio", { name: "English → Spanish" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("radio", { name: "Spanish → English" }).length).toBeGreaterThan(0);
+  });
+
+  it.each<RealtimeStatus>(["connecting", "listening"])("shows Stop while %s", (status) => {
       renderControlPanel(status);
 
-      expect(screen.getByRole("button", { name: /start listening/i })).toBeDisabled();
+      expect(screen.getAllByRole("button", { name: /stop/i }).length).toBeGreaterThan(0);
     }
   );
 });

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -8,7 +8,7 @@ describe("App translation modes", () => {
     const { fetchMock } = setupRealtimeMocks();
 
     render(<App />);
-    await userEvent.click(screen.getByRole("button", { name: /start listening/i }));
+    await userEvent.click(screen.getAllByRole("button", { name: /start listening/i })[0]);
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -24,8 +24,8 @@ describe("App translation modes", () => {
     const { fetchMock } = setupRealtimeMocks();
 
     render(<App />);
-    await userEvent.selectOptions(screen.getByLabelText("Direction"), "es_to_en");
-    await userEvent.click(screen.getByRole("button", { name: /start listening/i }));
+    await userEvent.click(screen.getAllByRole("radio", { name: "Spanish → English" })[0]);
+    await userEvent.click(screen.getAllByRole("button", { name: /start listening/i })[0]);
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -41,16 +41,16 @@ describe("App translation modes", () => {
     const { dataChannel } = setupRealtimeMocks();
 
     render(<App />);
-    await userEvent.click(screen.getByRole("button", { name: /start listening/i }));
+    await userEvent.click(screen.getAllByRole("button", { name: /start listening/i })[0]);
 
     await waitFor(() => {
       expect(screen.getByText("Listening")).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole("button", { name: /switch direction/i }));
+    await userEvent.click(screen.getAllByRole("button", { name: /switch direction/i })[0]);
 
-    expect(screen.getByRole("heading", { name: "Spanish Transcript" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "English Translation" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: "Spanish Transcript" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("heading", { name: "English Translation" }).length).toBeGreaterThan(0);
     expect(dataChannel.send).toHaveBeenCalledWith(
       JSON.stringify({
         type: "session.update",
@@ -63,16 +63,53 @@ describe("App translation modes", () => {
         }
       })
     );
-    expect(screen.getAllByText("--- Direction switched to Spanish → English ---")).toHaveLength(2);
+    expect(screen.queryByText("--- Direction switched to Spanish → English ---")).not.toBeInTheDocument();
+    expect(screen.getByText("Direction switched to Spanish → English.")).toBeInTheDocument();
+  });
+
+  it("copies a formatted transcript with source and translation", async () => {
+    const { emitEvent } = setupRealtimeMocks();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+
+    render(<App />);
+    await userEvent.click(screen.getAllByRole("button", { name: /start listening/i })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Listening")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      emitEvent({ type: "session.input_transcript.delta", delta: "The patient has pain." });
+      emitEvent({ type: "session.output_transcript.delta", delta: "El paciente tiene dolor." });
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: /^copy$/i })[0]).not.toBeDisabled();
+    });
+
+    await userEvent.click(screen.getAllByRole("button", { name: /^copy$/i })[0]);
+
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("Source transcript"));
+    expect(writeText.mock.calls[0][0]).toContain("The patient has pain.");
+    expect(writeText.mock.calls[0][0]).toContain("El paciente tiene dolor.");
   });
 });
 
 function setupRealtimeMocks() {
+  let messageHandler: ((message: { data: string }) => void) | null = null;
   const dataChannel = {
     readyState: "open",
     send: vi.fn(),
     close: vi.fn(),
-    addEventListener: vi.fn()
+    addEventListener: vi.fn((event: string, handler: (message: { data: string }) => void) => {
+      if (event === "message") {
+        messageHandler = handler;
+      }
+    })
   };
 
   const track = { stop: vi.fn() };
@@ -121,5 +158,11 @@ function setupRealtimeMocks() {
   });
   vi.stubGlobal("fetch", fetchMock);
 
-  return { dataChannel, fetchMock };
+  return {
+    dataChannel,
+    fetchMock,
+    emitEvent: (event: unknown) => {
+      messageHandler?.({ data: JSON.stringify(event) });
+    }
+  };
 }

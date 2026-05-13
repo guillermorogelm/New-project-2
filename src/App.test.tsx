@@ -16,7 +16,7 @@ describe("App microphone errors", () => {
 
     render(<App />);
 
-    await userEvent.click(screen.getByRole("button", { name: /start listening/i }));
+    await userEvent.click(screen.getAllByRole("button", { name: /start listening/i })[0]);
 
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(/microphone permission was denied/i);

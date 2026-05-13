@@ -3,6 +3,7 @@ import type { GlossaryTerm } from "./glossary";
 export type SavedPracticeSession = {
   id: string;
   timestamp: string;
+  direction?: string;
   sourceTranscript: string;
   translatedTranscript: string;
   detectedTerms: GlossaryTerm[];
