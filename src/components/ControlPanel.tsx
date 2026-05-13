@@ -7,12 +7,15 @@ import {
   Languages,
   Mic,
   MoreHorizontal,
+  Radio,
   Save,
   Square,
   Volume2
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
-import type { RealtimeStatus } from "../hooks/useRealtimeTranslation";
+import { useState, type PointerEvent, type ReactNode } from "react";
+import type { ListeningMode, RealtimeStatus } from "../hooks/useRealtimeTranslation";
+import { formatDuration } from "../utils/format";
+import { formatUsdCost } from "../utils/realtimeCost";
 import {
   getLanguageName,
   TRANSLATION_MODES,
@@ -26,11 +29,20 @@ type ControlPanelProps = {
   translationMode: TranslationMode;
   activeTargetLanguage: OutputLanguage;
   detectedSourceLanguage: DetectedLanguage;
+  listeningMode: ListeningMode;
+  isHolding: boolean;
+  isVoiceDetected: boolean;
+  autoStopCountdownSeconds: number;
+  durationSeconds: number;
+  estimatedCost: number;
   hasTranscript: boolean;
   playTranslatedAudio: boolean;
   highlightMedicalTerms: boolean;
   onTranslationModeChange: (value: TranslationMode) => void;
   onSwitchDirection: () => void;
+  onListeningModeChange: (value: ListeningMode) => void;
+  onHoldStart: () => void;
+  onHoldEnd: () => void;
   onStart: () => void;
   onStop: () => void;
   onClear: () => void;
@@ -51,7 +63,16 @@ export function ControlPanel(props: ControlPanelProps) {
     <>
       <section className="hidden rounded-3xl border border-slate-200 bg-white/95 p-3 shadow-soft md:block">
         <div className="flex flex-wrap items-center gap-3">
-          <SessionButton status={props.status} onStart={props.onStart} onStop={props.onStop} />
+          {props.listeningMode === "hold" ? (
+            <HoldToListenButton
+              isHolding={props.isHolding}
+              status={props.status}
+              onHoldStart={props.onHoldStart}
+              onHoldEnd={props.onHoldEnd}
+            />
+          ) : (
+            <SessionButton status={props.status} onStart={props.onStart} onStop={props.onStop} />
+          )}
           <DirectionSelector
             translationMode={props.translationMode}
             onTranslationModeChange={props.onTranslationModeChange}
@@ -96,17 +117,33 @@ export function ControlPanel(props: ControlPanelProps) {
         </div>
 
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
-          <PracticeModeControls
-            onHideSource={props.onHideSource}
-            onHideTarget={props.onHideTarget}
-            onShowBoth={props.onShowBoth}
-            onToggleLowerRegisterHelper={props.onToggleLowerRegisterHelper}
-          />
-          <ModeStatus
-            translationMode={props.translationMode}
-            activeTargetLanguage={props.activeTargetLanguage}
-            detectedSourceLanguage={props.detectedSourceLanguage}
-          />
+          <div className="flex flex-wrap items-center gap-3">
+            <CostControlCard
+              status={props.status}
+              listeningMode={props.listeningMode}
+              isVoiceDetected={props.isVoiceDetected}
+              autoStopCountdownSeconds={props.autoStopCountdownSeconds}
+              durationSeconds={props.durationSeconds}
+              estimatedCost={props.estimatedCost}
+              onListeningModeChange={props.onListeningModeChange}
+            />
+            <PracticeModeControls
+              onHideSource={props.onHideSource}
+              onHideTarget={props.onHideTarget}
+              onShowBoth={props.onShowBoth}
+              onToggleLowerRegisterHelper={props.onToggleLowerRegisterHelper}
+            />
+          </div>
+          <div className="space-y-2">
+            <ModeStatus
+              translationMode={props.translationMode}
+              activeTargetLanguage={props.activeTargetLanguage}
+              detectedSourceLanguage={props.detectedSourceLanguage}
+            />
+            <p className="text-right text-xs font-medium text-slate-500">
+              Tip: Stop listening whenever you are not actively practicing to avoid unnecessary API usage.
+            </p>
+          </div>
         </div>
       </section>
 
@@ -149,6 +186,18 @@ export function ControlPanel(props: ControlPanelProps) {
                 />
               </div>
               <div className="mt-3">
+                <CostControlCard
+                  status={props.status}
+                  listeningMode={props.listeningMode}
+                  isVoiceDetected={props.isVoiceDetected}
+                  autoStopCountdownSeconds={props.autoStopCountdownSeconds}
+                  durationSeconds={props.durationSeconds}
+                  estimatedCost={props.estimatedCost}
+                  onListeningModeChange={props.onListeningModeChange}
+                  compact
+                />
+              </div>
+              <div className="mt-3">
                 <PracticeModeControls
                   onHideSource={props.onHideSource}
                   onHideTarget={props.onHideTarget}
@@ -168,7 +217,17 @@ export function ControlPanel(props: ControlPanelProps) {
           ) : null}
 
           <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-2">
-            <SessionButton status={props.status} onStart={props.onStart} onStop={props.onStop} mobile />
+            {props.listeningMode === "hold" ? (
+              <HoldToListenButton
+                isHolding={props.isHolding}
+                status={props.status}
+                onHoldStart={props.onHoldStart}
+                onHoldEnd={props.onHoldEnd}
+                mobile
+              />
+            ) : (
+              <SessionButton status={props.status} onStart={props.onStart} onStop={props.onStop} mobile />
+            )}
             <button
               type="button"
               onClick={props.onSwitchDirection}
@@ -189,9 +248,59 @@ export function ControlPanel(props: ControlPanelProps) {
               <MoreHorizontal className="h-5 w-5" aria-hidden="true" />
             </button>
           </div>
+          <p className="mt-2 text-center text-xs font-semibold text-slate-500">
+            {formatDuration(props.durationSeconds)} · {formatUsdCost(props.estimatedCost)}
+          </p>
         </div>
       </section>
     </>
+  );
+}
+
+function HoldToListenButton({
+  isHolding,
+  status,
+  onHoldStart,
+  onHoldEnd,
+  mobile = false
+}: {
+  isHolding: boolean;
+  status: RealtimeStatus;
+  onHoldStart: () => void;
+  onHoldEnd: () => void;
+  mobile?: boolean;
+}) {
+  const handlePointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    onHoldStart();
+  };
+
+  const handlePointerEnd = (event: PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    onHoldEnd();
+  };
+
+  return (
+    <button
+      type="button"
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerEnd}
+      onPointerCancel={handlePointerEnd}
+      onPointerLeave={(event) => {
+        if (isHolding) {
+          handlePointerEnd(event);
+        }
+      }}
+      className={`inline-flex select-none items-center justify-center gap-2 rounded-2xl font-semibold text-white shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 ${
+        isHolding || status === "listening"
+          ? "bg-emerald-800"
+          : "bg-emerald-700 hover:bg-emerald-800"
+      } ${mobile ? "min-h-16 px-4 text-base" : "min-h-12 px-5 text-sm"}`}
+      aria-label="Hold to Listen"
+    >
+      <Radio className={`h-4 w-4 ${isHolding ? "animate-pulse" : ""}`} aria-hidden="true" />
+      {isHolding || status === "listening" ? "Listening while held..." : "Hold to Listen"}
+    </button>
   );
 }
 
@@ -418,5 +527,95 @@ function ModeStatus({
       <span>Detected: {getLanguageName(detectedSourceLanguage)}</span>
       <span>Output: {getLanguageName(activeTargetLanguage)}</span>
     </div>
+  );
+}
+
+function CostControlCard({
+  status,
+  listeningMode,
+  isVoiceDetected,
+  autoStopCountdownSeconds,
+  durationSeconds,
+  estimatedCost,
+  onListeningModeChange,
+  compact = false
+}: {
+  status: RealtimeStatus;
+  listeningMode: ListeningMode;
+  isVoiceDetected: boolean;
+  autoStopCountdownSeconds: number;
+  durationSeconds: number;
+  estimatedCost: number;
+  onListeningModeChange: (value: ListeningMode) => void;
+  compact?: boolean;
+}) {
+  const voiceLabel =
+    status === "listening" ? (isVoiceDetected ? "Voice detected" : "Silence") : "Idle";
+
+  return (
+    <section className={`rounded-2xl border border-slate-200 bg-slate-50 p-2 ${compact ? "" : "min-w-[320px]"}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+          Cost control
+        </p>
+        <p className="text-xs font-semibold text-slate-700">
+          {formatDuration(durationSeconds)} · {formatUsdCost(estimatedCost)}
+        </p>
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-1 rounded-xl bg-white p-1 ring-1 ring-slate-200">
+        <ModeButton
+          active={listeningMode === "continuous"}
+          label="Continuous"
+          onClick={() => onListeningModeChange("continuous")}
+        />
+        <ModeButton
+          active={listeningMode === "hold"}
+          label="Hold to Listen"
+          onClick={() => onListeningModeChange("hold")}
+        />
+      </div>
+      {compact ? (
+        <p className="mt-2 text-xs font-medium text-slate-500">
+          Hold to Listen is recommended on mobile when you are not speaking continuously.
+        </p>
+      ) : null}
+
+      <div className="mt-2 grid gap-1 text-xs font-medium text-slate-600 sm:grid-cols-2">
+        <span className="rounded-xl bg-white px-2 py-1 ring-1 ring-slate-200">
+          Voice: {voiceLabel}
+        </span>
+        <span className="rounded-xl bg-white px-2 py-1 ring-1 ring-slate-200">
+          Auto-stop after silence: 3 min
+        </span>
+      </div>
+      {status === "listening" && !isVoiceDetected ? (
+        <p className="mt-2 rounded-xl bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-900 ring-1 ring-amber-200">
+          No voice detected. Auto-stopping in {formatDuration(autoStopCountdownSeconds)}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function ModeButton({
+  active,
+  label,
+  onClick
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`min-h-8 rounded-lg px-2 text-xs font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+        active ? "bg-emerald-50 text-emerald-900 ring-1 ring-emerald-200" : "text-slate-600"
+      }`}
+    >
+      {label}
+    </button>
   );
 }

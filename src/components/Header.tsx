@@ -1,10 +1,12 @@
 import { Clock3, Radio } from "lucide-react";
 import type { RealtimeStatus } from "../hooks/useRealtimeTranslation";
 import { formatDuration } from "../utils/format";
+import { formatUsdCost } from "../utils/realtimeCost";
 
 type HeaderProps = {
   status: RealtimeStatus;
   durationSeconds: number;
+  estimatedCost: number;
 };
 
 const STATUS_LABELS: Record<RealtimeStatus, string> = {
@@ -21,7 +23,7 @@ const STATUS_STYLES: Record<RealtimeStatus, string> = {
   error: "border-rose-200 bg-rose-50 text-rose-800"
 };
 
-export function Header({ status, durationSeconds }: HeaderProps) {
+export function Header({ status, durationSeconds, estimatedCost }: HeaderProps) {
   return (
     <header className="sticky top-0 z-30 -mx-4 border-b border-slate-200/80 bg-[#f7faf9]/95 px-4 py-2.5 backdrop-blur sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
       <div className="mx-auto flex w-full max-w-[1600px] items-center justify-between gap-3">
@@ -55,7 +57,7 @@ export function Header({ status, durationSeconds }: HeaderProps) {
           ) : null}
           <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 shadow-sm sm:text-sm">
             <Clock3 className="h-3.5 w-3.5" aria-hidden="true" />
-            {formatDuration(durationSeconds)}
+            {formatDuration(durationSeconds)} · {formatUsdCost(estimatedCost)}
           </span>
         </div>
       </div>

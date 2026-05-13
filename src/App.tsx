@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { ControlPanel } from "./components/ControlPanel";
 import { Disclaimer } from "./components/Disclaimer";
@@ -44,6 +44,17 @@ function App() {
     Boolean(realtime.sourceTranscript.trim()) || Boolean(realtime.translatedTranscript.trim());
   const cleanSourceTranscript = stripDirectionMarkers(realtime.sourceTranscript);
   const cleanTranslatedTranscript = stripDirectionMarkers(realtime.translatedTranscript);
+  const sessionNotice = realtime.sessionNotice;
+  const clearSessionNotice = realtime.clearSessionNotice;
+
+  useEffect(() => {
+    if (!sessionNotice) {
+      return;
+    }
+
+    flashNotice(sessionNotice);
+    clearSessionNotice();
+  }, [clearSessionNotice, sessionNotice]);
 
   const copyTranscript = async () => {
     const directionHistory = Array.from(
@@ -118,7 +129,11 @@ function App() {
   return (
     <div className="min-h-screen overflow-x-hidden bg-[#f7faf9] text-slate-950">
       <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 pb-36 pt-0 sm:px-6 md:pb-6 lg:px-8">
-        <Header status={realtime.status} durationSeconds={realtime.durationSeconds} />
+        <Header
+          status={realtime.status}
+          durationSeconds={realtime.durationSeconds}
+          estimatedCost={realtime.estimatedCost}
+        />
         <Disclaimer />
 
         {realtime.error ? (
@@ -145,11 +160,20 @@ function App() {
           translationMode={realtime.translationMode}
           activeTargetLanguage={realtime.activeTargetLanguage}
           detectedSourceLanguage={realtime.detectedSourceLanguage}
+          listeningMode={realtime.listeningMode}
+          isHolding={realtime.isHolding}
+          isVoiceDetected={realtime.isVoiceDetected}
+          autoStopCountdownSeconds={realtime.autoStopCountdownSeconds}
+          durationSeconds={realtime.durationSeconds}
+          estimatedCost={realtime.estimatedCost}
           hasTranscript={hasTranscript}
           playTranslatedAudio={playTranslatedAudio}
           highlightMedicalTerms={highlightMedicalTerms}
           onTranslationModeChange={realtime.setTranslationMode}
           onSwitchDirection={switchDirection}
+          onListeningModeChange={realtime.setListeningMode}
+          onHoldStart={() => void realtime.startHolding()}
+          onHoldEnd={realtime.stopHolding}
           onStart={() => void realtime.start()}
           onStop={realtime.stop}
           onClear={clearSession}

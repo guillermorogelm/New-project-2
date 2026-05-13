@@ -15,8 +15,22 @@ import {
   type OutputLanguage,
   type TranslationMode
 } from "../utils/translationModes";
+import {
+  createCostReminderMessage,
+  estimateRealtimeCost,
+  getCostAlertInterval,
+  shouldShowCostAlert
+} from "../utils/realtimeCost";
+import { registerSessionLifecycleHandlers } from "../utils/sessionLifecycle";
+import {
+  calculateRms,
+  getSilenceCountdownSeconds,
+  SILENCE_AUTO_STOP_SECONDS,
+  SILENCE_RMS_THRESHOLD
+} from "../utils/voiceActivity";
 
 export type RealtimeStatus = "idle" | "connecting" | "listening" | "error";
+export type ListeningMode = "continuous" | "hold";
 
 type UseRealtimeTranslationOptions = {
   playTranslatedAudio: boolean;
@@ -31,6 +45,14 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
   const [status, setStatus] = useState<RealtimeStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [durationSeconds, setDurationSeconds] = useState(0);
+  const [listeningMode, setListeningModeState] = useState<ListeningMode>("continuous");
+  const [isHolding, setIsHolding] = useState(false);
+  const [isVoiceDetected, setIsVoiceDetected] = useState(false);
+  const [silenceSeconds, setSilenceSeconds] = useState(0);
+  const [autoStopCountdownSeconds, setAutoStopCountdownSeconds] = useState(
+    SILENCE_AUTO_STOP_SECONDS
+  );
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [translationMode, setTranslationModeState] = useState<TranslationMode>("en_to_es");
   const [activeTargetLanguage, setActiveTargetLanguage] = useState<OutputLanguage>("es");
   const [detectedSourceLanguage, setDetectedSourceLanguage] =
@@ -46,16 +68,30 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const timerRef = useRef<number | null>(null);
   const startedAtRef = useRef<number | null>(null);
+  const activeAccumulatedSecondsRef = useRef(0);
+  const lastAlertedCostIntervalRef = useRef(0);
   const statusRef = useRef<RealtimeStatus>("idle");
   const playTranslatedAudioRef = useRef(playTranslatedAudio);
+  const listeningModeRef = useRef<ListeningMode>("continuous");
+  const isHoldingRef = useRef(false);
   const translationModeRef = useRef<TranslationMode>("en_to_es");
   const activeTargetLanguageRef = useRef<OutputLanguage>("es");
   const autoDebounceRef = useRef<number | null>(null);
   const lastAutoSwitchAtRef = useRef(0);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const voiceActivityFrameRef = useRef<number | null>(null);
+  const silenceStartedAtRef = useRef<number | null>(null);
+  const lastSilenceSecondRef = useRef(-1);
+  const stopRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
+
+  useEffect(() => {
+    listeningModeRef.current = listeningMode;
+  }, [listeningMode]);
 
   useEffect(() => {
     playTranslatedAudioRef.current = playTranslatedAudio;
@@ -106,59 +142,196 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
 
   const stopTimer = useCallback(() => {
     if (timerRef.current !== null) {
+      if (startedAtRef.current) {
+        activeAccumulatedSecondsRef.current += Math.floor(
+          (Date.now() - startedAtRef.current) / 1000
+        );
+        setDurationSeconds(activeAccumulatedSecondsRef.current);
+      }
       window.clearInterval(timerRef.current);
       timerRef.current = null;
     }
+    startedAtRef.current = null;
   }, []);
 
   const startTimer = useCallback(() => {
     stopTimer();
     startedAtRef.current = Date.now();
-    setDurationSeconds(0);
     timerRef.current = window.setInterval(() => {
       if (startedAtRef.current) {
-        setDurationSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000));
+        const activeSeconds =
+          activeAccumulatedSecondsRef.current +
+          Math.floor((Date.now() - startedAtRef.current) / 1000);
+        setDurationSeconds(activeSeconds);
+
+        if (shouldShowCostAlert(activeSeconds, lastAlertedCostIntervalRef.current)) {
+          lastAlertedCostIntervalRef.current = getCostAlertInterval(activeSeconds);
+          setSessionNotice(createCostReminderMessage(activeSeconds));
+        }
       }
     }, 1000);
   }, [stopTimer]);
 
-  const closeRealtimeResources = useCallback(() => {
-    stopTimer();
+  const stopVoiceActivityMonitor = useCallback(() => {
+    if (voiceActivityFrameRef.current !== null) {
+      window.cancelAnimationFrame(voiceActivityFrameRef.current);
+      voiceActivityFrameRef.current = null;
+    }
 
-    dataChannelRef.current?.close();
+    analyserRef.current = null;
+    silenceStartedAtRef.current = null;
+    lastSilenceSecondRef.current = -1;
+    setIsVoiceDetected(false);
+    setSilenceSeconds(0);
+    setAutoStopCountdownSeconds(SILENCE_AUTO_STOP_SECONDS);
+
+    const audioContext = audioContextRef.current;
+    audioContextRef.current = null;
+
+    if (audioContext && audioContext.state !== "closed") {
+      void audioContext
+        .close()
+        .then(() => debugLog("AudioContext closed"))
+        .catch(() => undefined);
+    }
+  }, []);
+
+  const closeRealtimeResources = useCallback(() => {
+    debugLog("Stopping realtime session");
+    stopTimer();
+    stopVoiceActivityMonitor();
+
+    try {
+      dataChannelRef.current?.close();
+    } catch {
+      // Close is best-effort; resources may already be closing.
+    }
     dataChannelRef.current = null;
 
-    peerConnectionRef.current?.getSenders().forEach((sender) => {
-      sender.track?.stop();
-    });
-    peerConnectionRef.current?.close();
+    try {
+      peerConnectionRef.current?.getSenders().forEach((sender) => {
+        sender.track?.stop();
+      });
+      peerConnectionRef.current?.close();
+      debugLog("Peer connection closed");
+    } catch {
+      // Peer connection cleanup should be idempotent.
+    }
     peerConnectionRef.current = null;
 
-    mediaStreamRef.current?.getTracks().forEach((track) => {
-      track.stop();
-    });
+    try {
+      mediaStreamRef.current?.getTracks().forEach((track) => {
+        track.stop();
+      });
+      debugLog("Microphone tracks stopped");
+    } catch {
+      // Media tracks may already be stopped.
+    }
     mediaStreamRef.current = null;
 
     if (audioElementRef.current) {
-      audioElementRef.current.pause();
+      try {
+        audioElementRef.current.pause();
+      } catch {
+        // jsdom and some browsers can throw here during teardown.
+      }
       audioElementRef.current.srcObject = null;
       audioElementRef.current.muted = true;
     }
-  }, [stopTimer]);
+  }, [stopTimer, stopVoiceActivityMonitor]);
 
   const stop = useCallback(() => {
     closeRealtimeResources();
+    isHoldingRef.current = false;
+    setIsHolding(false);
+    setIsVoiceDetected(false);
+    setSilenceSeconds(0);
+    setAutoStopCountdownSeconds(SILENCE_AUTO_STOP_SECONDS);
+    statusRef.current = "idle";
     setStatus("idle");
   }, [closeRealtimeResources]);
+
+  useEffect(() => {
+    stopRef.current = stop;
+  }, [stop]);
 
   const clear = useCallback(() => {
     setError(null);
     if (statusRef.current === "listening") {
       startedAtRef.current = Date.now();
     }
+    activeAccumulatedSecondsRef.current = 0;
+    lastAlertedCostIntervalRef.current = 0;
     setDurationSeconds(0);
+    setSessionNotice(null);
     dispatchTranscriptEvent({ type: "reset" });
   }, []);
+
+  const clearSessionNotice = useCallback(() => {
+    setSessionNotice(null);
+  }, []);
+
+  const startVoiceActivityMonitor = useCallback((mediaStream: MediaStream) => {
+    const AudioContextConstructor =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+    if (!AudioContextConstructor) {
+      return;
+    }
+
+    stopVoiceActivityMonitor();
+
+    const audioContext = new AudioContextConstructor();
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    audioContext.createMediaStreamSource(mediaStream).connect(analyser);
+
+    audioContextRef.current = audioContext;
+    analyserRef.current = analyser;
+
+    const samples = new Uint8Array(analyser.fftSize);
+
+    const tick = () => {
+      if (statusRef.current !== "listening" || !analyserRef.current) {
+        return;
+      }
+
+      analyserRef.current.getByteTimeDomainData(samples);
+      const rms = calculateRms(samples);
+      const now = performance.now();
+
+      if (rms >= SILENCE_RMS_THRESHOLD) {
+        silenceStartedAtRef.current = null;
+        lastSilenceSecondRef.current = -1;
+        setIsVoiceDetected(true);
+        setSilenceSeconds(0);
+        setAutoStopCountdownSeconds(SILENCE_AUTO_STOP_SECONDS);
+      } else {
+        if (silenceStartedAtRef.current === null) {
+          silenceStartedAtRef.current = now;
+        }
+
+        const elapsedSilenceSeconds = Math.floor((now - silenceStartedAtRef.current) / 1000);
+        if (elapsedSilenceSeconds !== lastSilenceSecondRef.current) {
+          lastSilenceSecondRef.current = elapsedSilenceSeconds;
+          setIsVoiceDetected(false);
+          setSilenceSeconds(elapsedSilenceSeconds);
+          setAutoStopCountdownSeconds(getSilenceCountdownSeconds(elapsedSilenceSeconds));
+        }
+
+        if (elapsedSilenceSeconds >= SILENCE_AUTO_STOP_SECONDS) {
+          setSessionNotice("Auto-stopped after 3 minutes without voice.");
+          stopRef.current();
+          return;
+        }
+      }
+
+      voiceActivityFrameRef.current = window.requestAnimationFrame(tick);
+    };
+
+    voiceActivityFrameRef.current = window.requestAnimationFrame(tick);
+  }, [stopVoiceActivityMonitor]);
 
   const start = useCallback(
     async () => {
@@ -166,6 +339,7 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
         return;
       }
 
+      statusRef.current = "connecting";
       setStatus("connecting");
       setError(null);
       const targetLanguage = activeTargetLanguageRef.current;
@@ -194,6 +368,7 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
         peerConnection.onconnectionstatechange = () => {
           if (peerConnection.connectionState === "failed") {
             setError("The Realtime connection failed. Please stop and try again.");
+            statusRef.current = "error";
             setStatus("error");
             closeRealtimeResources();
           }
@@ -263,20 +438,93 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
         });
 
         startTimer();
+        setIsVoiceDetected(false);
+        setSilenceSeconds(0);
+        setAutoStopCountdownSeconds(SILENCE_AUTO_STOP_SECONDS);
+        statusRef.current = "listening";
         setStatus("listening");
+        startVoiceActivityMonitor(mediaStream);
       } catch (caughtError) {
         closeRealtimeResources();
+        statusRef.current = "error";
         setStatus("error");
         setError(toUserFacingError(caughtError));
       }
     },
-    [closeRealtimeResources, startTimer]
+    [closeRealtimeResources, startTimer, startVoiceActivityMonitor]
   );
+
+  const setListeningMode = useCallback(
+    (mode: ListeningMode) => {
+      if (mode === listeningModeRef.current) {
+        return;
+      }
+
+      if (
+        mode === "hold" &&
+        (statusRef.current === "connecting" || statusRef.current === "listening") &&
+        !isHoldingRef.current
+      ) {
+        stop();
+      }
+
+      if (mode === "continuous") {
+        isHoldingRef.current = false;
+        setIsHolding(false);
+      }
+
+      listeningModeRef.current = mode;
+      setListeningModeState(mode);
+    },
+    [stop]
+  );
+
+  const startHolding = useCallback(async () => {
+    if (isHoldingRef.current) {
+      return;
+    }
+
+    isHoldingRef.current = true;
+    setIsHolding(true);
+    listeningModeRef.current = "hold";
+    setListeningModeState("hold");
+
+    if (statusRef.current !== "connecting" && statusRef.current !== "listening") {
+      await start();
+    }
+  }, [start]);
+
+  const stopHolding = useCallback(() => {
+    if (!isHoldingRef.current) {
+      return;
+    }
+
+    isHoldingRef.current = false;
+    setIsHolding(false);
+    stop();
+  }, [stop]);
 
   useEffect(() => {
     return () => {
       closeRealtimeResources();
     };
+  }, [closeRealtimeResources]);
+
+  useEffect(() => {
+    return registerSessionLifecycleHandlers({
+      isSessionActive: () =>
+        statusRef.current === "connecting" || statusRef.current === "listening",
+      cleanupSession: () => {
+        closeRealtimeResources();
+        isHoldingRef.current = false;
+        setIsHolding(false);
+        statusRef.current = "idle";
+        setStatus("idle");
+      },
+      onBackgroundWarning: () => {
+        setSessionNotice("App is in the background. Stop listening to avoid extra API usage.");
+      }
+    });
   }, [closeRealtimeResources]);
 
   useEffect(() => {
@@ -325,6 +573,13 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
 
   return {
     status,
+    listeningMode,
+    isHolding,
+    isVoiceDetected,
+    silenceSeconds,
+    autoStopCountdownSeconds,
+    estimatedCost: estimateRealtimeCost(durationSeconds),
+    sessionNotice,
     translationMode,
     activeTargetLanguage,
     detectedSourceLanguage,
@@ -336,10 +591,20 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
     setTranslationMode,
     switchDirection,
     updateOutputLanguage,
+    setListeningMode,
+    startHolding,
+    stopHolding,
+    clearSessionNotice,
     start,
     stop,
     clear
   };
+}
+
+function debugLog(message: string): void {
+  if (import.meta.env.DEV) {
+    console.debug(message);
+  }
 }
 
 export function sendOutputLanguageUpdate(
