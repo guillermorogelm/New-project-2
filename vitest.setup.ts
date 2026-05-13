@@ -13,4 +13,5 @@ Object.defineProperty(HTMLMediaElement.prototype, "pause", {
 afterEach(() => {
   localStorage.clear();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });

@@ -43,6 +43,13 @@ export function transcriptEventReducer(
     };
   }
 
+  if (event.type === "direction.marker") {
+    return {
+      sourceTranscript: appendDelta(state.sourceTranscript, delta),
+      translatedTranscript: appendDelta(state.translatedTranscript, delta)
+    };
+  }
+
   return state;
 }
 

@@ -25,6 +25,10 @@ app.post("/api/realtime/session", async (req: Request, res: Response) => {
     return;
   }
 
+  const requestedTargetLanguage =
+    typeof req.body?.targetLanguage === "string" ? req.body.targetLanguage.trim() : "es";
+  const targetLanguage = requestedTargetLanguage === "en" ? "en" : "es";
+
   try {
     const response = await fetch(OPENAI_TRANSLATION_SECRET_URL, {
       method: "POST",
@@ -33,8 +37,18 @@ app.post("/api/realtime/session", async (req: Request, res: Response) => {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "gpt-realtime-translate",
-        output_language: "es"
+        session: {
+          model: "gpt-realtime-translate",
+          audio: {
+            input: {
+              transcription: { model: "gpt-realtime-whisper" },
+              noise_reduction: { type: "near_field" }
+            },
+            output: {
+              language: targetLanguage || "es"
+            }
+          }
+        }
       })
     });
 
@@ -48,14 +62,19 @@ app.post("/api/realtime/session", async (req: Request, res: Response) => {
     }
 
     if (!response.ok) {
+      console.error("OpenAI Realtime Translation session error", {
+        status: response.status,
+        statusText: response.statusText,
+        body: data
+      });
+
       const readableMessage =
         extractOpenAIErrorMessage(data) ||
         `OpenAI returned ${response.status} ${response.statusText}`;
 
       res.status(response.status).json({
         error: readableMessage,
-        status: response.status,
-        details: data
+        status: response.status
       });
       return;
     }

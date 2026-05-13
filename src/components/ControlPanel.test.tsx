@@ -18,11 +18,14 @@ function renderControlPanel(status: RealtimeStatus) {
   return render(
     <ControlPanel
       status={status}
-      targetLanguage="es"
+      translationMode="en_to_es"
+      activeTargetLanguage="es"
+      detectedSourceLanguage="unknown"
       hasTranscript={false}
       playTranslatedAudio={false}
       highlightMedicalTerms
-      onTargetLanguageChange={vi.fn()}
+      onTranslationModeChange={vi.fn()}
+      onSwitchDirection={vi.fn()}
       onStart={vi.fn()}
       onStop={vi.fn()}
       onClear={vi.fn()}
@@ -30,8 +33,8 @@ function renderControlPanel(status: RealtimeStatus) {
       onSave={vi.fn()}
       onPlayTranslatedAudioChange={vi.fn()}
       onHighlightMedicalTermsChange={vi.fn()}
-      onHideEnglish={vi.fn()}
-      onHideSpanish={vi.fn()}
+      onHideSource={vi.fn()}
+      onHideTarget={vi.fn()}
       onShowBoth={vi.fn()}
       onToggleLowerRegisterHelper={vi.fn()}
     />

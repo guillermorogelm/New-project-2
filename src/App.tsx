@@ -14,11 +14,11 @@ import {
   savePracticeSession,
   type SavedPracticeSession
 } from "./utils/sessionStorage";
+import { TRANSLATION_MODES } from "./utils/translationModes";
 
-type TranscriptVisibility = "both" | "english-hidden" | "spanish-hidden";
+type TranscriptVisibility = "both" | "source-hidden" | "target-hidden";
 
 function App() {
-  const [targetLanguage, setTargetLanguage] = useState("es");
   const [playTranslatedAudio, setPlayTranslatedAudio] = useState(false);
   const [highlightMedicalTerms, setHighlightMedicalTerms] = useState(true);
   const [transcriptVisibility, setTranscriptVisibility] =
@@ -30,6 +30,7 @@ function App() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const realtime = useRealtimeTranslation({ playTranslatedAudio });
+  const modeConfig = TRANSLATION_MODES[realtime.translationMode];
   const combinedTranscript = `${realtime.sourceTranscript} ${realtime.translatedTranscript}`;
   const detectedTerms = useMemo(
     () => detectGlossaryTerms(combinedTranscript),
@@ -41,11 +42,12 @@ function App() {
   const copyTranscript = async () => {
     const text = [
       "CMIT Live Interpreter Trainer",
+      `Direction: ${modeConfig.label}`,
       "",
-      "English Transcript:",
+      `${modeConfig.sourceLabel}:`,
       realtime.sourceTranscript || "(empty)",
       "",
-      "Spanish Translation:",
+      `${modeConfig.targetLabel}:`,
       realtime.translatedTranscript || "(empty)"
     ].join("\n");
 
@@ -113,20 +115,23 @@ function App() {
 
         <ControlPanel
           status={realtime.status}
-          targetLanguage={targetLanguage}
+          translationMode={realtime.translationMode}
+          activeTargetLanguage={realtime.activeTargetLanguage}
+          detectedSourceLanguage={realtime.detectedSourceLanguage}
           hasTranscript={hasTranscript}
           playTranslatedAudio={playTranslatedAudio}
           highlightMedicalTerms={highlightMedicalTerms}
-          onTargetLanguageChange={setTargetLanguage}
-          onStart={() => void realtime.start(targetLanguage)}
+          onTranslationModeChange={realtime.setTranslationMode}
+          onSwitchDirection={realtime.switchDirection}
+          onStart={() => void realtime.start()}
           onStop={realtime.stop}
           onClear={clearSession}
           onCopy={() => void copyTranscript()}
           onSave={saveCurrentSession}
           onPlayTranslatedAudioChange={setPlayTranslatedAudio}
           onHighlightMedicalTermsChange={setHighlightMedicalTerms}
-          onHideEnglish={() => setTranscriptVisibility("english-hidden")}
-          onHideSpanish={() => setTranscriptVisibility("spanish-hidden")}
+          onHideSource={() => setTranscriptVisibility("source-hidden")}
+          onHideTarget={() => setTranscriptVisibility("target-hidden")}
           onShowBoth={() => setTranscriptVisibility("both")}
           onToggleLowerRegisterHelper={() => setShowLowerRegisterHelper((value) => !value)}
         />
@@ -143,19 +148,19 @@ function App() {
         <main className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
           <div className="grid min-w-0 gap-4 lg:grid-cols-2">
             <TranscriptPanel
-              title="English Transcript"
+              title={modeConfig.sourceLabel}
               label="Source"
               text={realtime.sourceTranscript}
               emptyText="Press Start Listening and allow microphone access to begin live transcription."
-              hidden={transcriptVisibility === "english-hidden"}
+              hidden={transcriptVisibility === "source-hidden"}
               highlightMedicalTerms={highlightMedicalTerms}
             />
             <TranscriptPanel
-              title="Spanish Translation"
+              title={modeConfig.targetLabel}
               label="Target"
               text={realtime.translatedTranscript}
-              emptyText="The Spanish translation will appear here with a short live delay."
-              hidden={transcriptVisibility === "spanish-hidden"}
+              emptyText="The live translation will appear here with a short delay."
+              hidden={transcriptVisibility === "target-hidden"}
               highlightMedicalTerms={highlightMedicalTerms}
             />
           </div>

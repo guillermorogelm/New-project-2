@@ -5,6 +5,16 @@ import {
   type RealtimeTranscriptEvent,
   type TranscriptState
 } from "./transcriptEvents";
+import { detectEnglishOrSpanish } from "../utils/languageDetection";
+import {
+  getModeTargetLanguage,
+  getSwitchedMode,
+  mapDetectedLanguageToOutputLanguage,
+  TRANSLATION_MODES,
+  type DetectedLanguage,
+  type OutputLanguage,
+  type TranslationMode
+} from "../utils/translationModes";
 
 export type RealtimeStatus = "idle" | "connecting" | "listening" | "error";
 
@@ -21,6 +31,10 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
   const [status, setStatus] = useState<RealtimeStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [durationSeconds, setDurationSeconds] = useState(0);
+  const [translationMode, setTranslationModeState] = useState<TranslationMode>("en_to_es");
+  const [activeTargetLanguage, setActiveTargetLanguage] = useState<OutputLanguage>("es");
+  const [detectedSourceLanguage, setDetectedSourceLanguage] =
+    useState<DetectedLanguage>("unknown");
   const [transcripts, dispatchTranscriptEvent] = useReducer(
     transcriptEventReducer,
     emptyTranscriptState
@@ -34,6 +48,10 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
   const startedAtRef = useRef<number | null>(null);
   const statusRef = useRef<RealtimeStatus>("idle");
   const playTranslatedAudioRef = useRef(playTranslatedAudio);
+  const translationModeRef = useRef<TranslationMode>("en_to_es");
+  const activeTargetLanguageRef = useRef<OutputLanguage>("es");
+  const autoDebounceRef = useRef<number | null>(null);
+  const lastAutoSwitchAtRef = useRef(0);
 
   useEffect(() => {
     statusRef.current = status;
@@ -45,6 +63,46 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
       audioElementRef.current.muted = !playTranslatedAudio;
     }
   }, [playTranslatedAudio]);
+
+  const updateOutputLanguage = useCallback((language: OutputLanguage) => {
+    return sendOutputLanguageUpdate(dataChannelRef.current, language);
+  }, []);
+
+  const applyOutputLanguage = useCallback(
+    (language: OutputLanguage) => {
+      activeTargetLanguageRef.current = language;
+      setActiveTargetLanguage(language);
+
+      if (statusRef.current === "listening") {
+        updateOutputLanguage(language);
+      }
+    },
+    [updateOutputLanguage]
+  );
+
+  const addDirectionMarker = useCallback((mode: TranslationMode) => {
+    const marker = `\n\n--- Direction switched to ${TRANSLATION_MODES[mode].label} ---\n\n`;
+    dispatchTranscriptEvent({ type: "direction.marker", delta: marker });
+  }, []);
+
+  const setTranslationMode = useCallback(
+    (mode: TranslationMode, options: { addMarker?: boolean } = {}) => {
+      translationModeRef.current = mode;
+      setTranslationModeState(mode);
+      setDetectedSourceLanguage("unknown");
+      applyOutputLanguage(getModeTargetLanguage(mode));
+
+      if (options.addMarker) {
+        addDirectionMarker(mode);
+      }
+    },
+    [addDirectionMarker, applyOutputLanguage]
+  );
+
+  const switchDirection = useCallback(() => {
+    const nextMode = getSwitchedMode(translationModeRef.current);
+    setTranslationMode(nextMode, { addMarker: true });
+  }, [setTranslationMode]);
 
   const stopTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -103,13 +161,14 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
   }, []);
 
   const start = useCallback(
-    async (targetLanguage = "es") => {
+    async () => {
       if (statusRef.current === "connecting" || statusRef.current === "listening") {
         return;
       }
 
       setStatus("connecting");
       setError(null);
+      const targetLanguage = activeTargetLanguageRef.current;
 
       try {
         if (!navigator.mediaDevices?.getUserMedia) {
@@ -220,17 +279,91 @@ export function useRealtimeTranslation({ playTranslatedAudio }: UseRealtimeTrans
     };
   }, [closeRealtimeResources]);
 
+  useEffect(() => {
+    if (translationMode !== "auto") {
+      if (autoDebounceRef.current !== null) {
+        window.clearTimeout(autoDebounceRef.current);
+        autoDebounceRef.current = null;
+      }
+      return;
+    }
+
+    if (!transcripts.sourceTranscript.trim()) {
+      setDetectedSourceLanguage("unknown");
+      return;
+    }
+
+    if (autoDebounceRef.current !== null) {
+      window.clearTimeout(autoDebounceRef.current);
+    }
+
+    autoDebounceRef.current = window.setTimeout(() => {
+      const detectedLanguage = detectEnglishOrSpanish(transcripts.sourceTranscript);
+      setDetectedSourceLanguage(detectedLanguage);
+
+      const nextOutputLanguage = mapDetectedLanguageToOutputLanguage(detectedLanguage);
+      if (!nextOutputLanguage || nextOutputLanguage === activeTargetLanguageRef.current) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastAutoSwitchAtRef.current < 5000) {
+        return;
+      }
+
+      lastAutoSwitchAtRef.current = now;
+      applyOutputLanguage(nextOutputLanguage);
+    }, 2000);
+
+    return () => {
+      if (autoDebounceRef.current !== null) {
+        window.clearTimeout(autoDebounceRef.current);
+        autoDebounceRef.current = null;
+      }
+    };
+  }, [applyOutputLanguage, translationMode, transcripts.sourceTranscript]);
+
   return {
     status,
+    translationMode,
+    activeTargetLanguage,
+    detectedSourceLanguage,
     sourceTranscript: transcripts.sourceTranscript,
     translatedTranscript: transcripts.translatedTranscript,
     error,
     durationSeconds,
     audioElementRef,
+    setTranslationMode,
+    switchDirection,
+    updateOutputLanguage,
     start,
     stop,
     clear
   };
+}
+
+export function sendOutputLanguageUpdate(
+  dataChannel: Pick<RTCDataChannel, "readyState" | "send"> | null,
+  language: OutputLanguage
+): boolean {
+  if (!dataChannel || dataChannel.readyState !== "open") {
+    return false;
+  }
+
+  dataChannel.send(
+    JSON.stringify({
+      type: "session.update",
+      session: {
+        audio: {
+          output: {
+            language
+          }
+        }
+      }
+    })
+  );
+
+  return true;
 }
 
 export function parseRealtimeEvent(data: unknown): RealtimeTranscriptEvent | null {

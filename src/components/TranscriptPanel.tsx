@@ -31,8 +31,8 @@ export function TranscriptPanel({
   highlightMedicalTerms
 }: TranscriptPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const tokens = useMemo(
-    () => tokenizeHighlights(text, highlightMedicalTerms),
+  const segments = useMemo(
+    () => splitTranscriptSegments(text, highlightMedicalTerms),
     [text, highlightMedicalTerms]
   );
 
@@ -64,24 +64,52 @@ export function TranscriptPanel({
             Hidden for practice
           </p>
         ) : text.trim() ? (
-          <p className="whitespace-pre-wrap break-words">
-            {tokens.map((token, index) =>
-              token.kind === "plain" ? (
-                <span key={`${token.text}-${index}`}>{token.text}</span>
-              ) : (
-                <span
-                  key={`${token.text}-${index}`}
-                  className={`mx-0.5 inline rounded-md px-1.5 py-0.5 text-[0.92em] ${HIGHLIGHT_STYLES[token.kind]}`}
+          <div className="whitespace-pre-wrap break-words">
+            {segments.map((segment, segmentIndex) =>
+              segment.kind === "marker" ? (
+                <div
+                  key={`${segment.text}-${segmentIndex}`}
+                  className="my-4 rounded-lg border border-dashed border-emerald-300 bg-emerald-50 px-3 py-2 text-center text-sm font-semibold leading-6 text-emerald-900"
                 >
-                  {token.text}
+                  {segment.text}
+                </div>
+              ) : (
+                <span key={`${segment.text}-${segmentIndex}`}>
+                  {segment.tokens.map((token, tokenIndex) =>
+                    token.kind === "plain" ? (
+                      <span key={`${token.text}-${tokenIndex}`}>{token.text}</span>
+                    ) : (
+                      <span
+                        key={`${token.text}-${tokenIndex}`}
+                        className={`mx-0.5 inline rounded-md px-1.5 py-0.5 text-[0.92em] ${HIGHLIGHT_STYLES[token.kind]}`}
+                      >
+                        {token.text}
+                      </span>
+                    )
+                  )}
                 </span>
               )
             )}
-          </p>
+          </div>
         ) : (
           <p className="text-base leading-7 text-stone-500">{emptyText}</p>
         )}
       </div>
     </section>
   );
+}
+
+function splitTranscriptSegments(text: string, highlightMedicalTerms: boolean) {
+  return text
+    .split(/(--- Direction switched to .+? ---)/gu)
+    .filter(Boolean)
+    .map((segment) =>
+      segment.startsWith("--- Direction switched to")
+        ? ({ kind: "marker" as const, text: segment })
+        : ({
+            kind: "text" as const,
+            text: segment,
+            tokens: tokenizeHighlights(segment, highlightMedicalTerms)
+          })
+    );
 }
